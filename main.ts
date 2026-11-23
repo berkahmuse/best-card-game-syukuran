@@ -1,41 +1,90 @@
-// A working best-game-01 entry (Node 22, standard library only): the game is this directory's
-// game/ folder, plain static files a desktop browser loads offline (game/index.html and its ES
-// modules, no library and no network request), and the program hands it in. It copies game/ and
-// screenshots/ from beside this file to /output and writes /output/dossier.json, the summary the
-// judge reads, with the vendored make.fun library. A starting point, not a winner: Block Dodger, a
-// plain 2D canvas game where a paddle dodges falling blocks and catches coins, with a title screen,
-// score, lives and levels, game over and restart, flat colours and no sound. Build your own game
-// (any genre, any library you vendor under game/, or none), put your 3 or 4 PNG or JPEG screenshots
-// in screenshots/ (the first by name is the cover) and run it.
+// Lantern Row — Festival of Nine Lights: entrypoint.
 //
-// Serve it locally with `node serve.ts`, then open http://localhost:8080.
-// Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
-//   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
+// Running this file is the whole submission step. It stages the game for the
+// judge exactly as it sits in this repository:
+//
+//   1. the playable game (game/index.html plus its ES modules under game/src/)
+//      is copied into the output directory untouched, so what the judge opens
+//      is byte-for-byte what a player would get locally;
+//   2. the four screenshots in screenshots/ follow it (the first by name is
+//      the cover the bounty page shows);
+//   3. dossier.json is written last, summarising the staged tree for the
+//      scorer, via the vendored make.fun library in vendor/makefun-game.ts.
+//
+// Usage:
+//   node main.ts [--out <dir>]
+//
+// The output directory resolves in this order: the --out flag, then the
+// MAKEFUN_OUTPUT_DIR environment variable (what local runs use), then the
+// grader's own /output. Node 22 standard library only; no build step.
 
 import { cpSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildDossier } from './vendor/makefun-game.ts';
 
-const here = fileURLToPath(new URL('.', import.meta.url));
-const out = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
+// The caps below mirror the scorer's gate for this bounty. text_max_bytes is
+// the only one that shapes the dossier's bytes; the rest make this program
+// refuse a tree the scorer would refuse anyway (too many or too-large
+// screenshots, an oversized game/ tree, an over-long path), so a bad entry
+// fails here, loudly, instead of at judging time.
+const SCORER_CAPS = {
+  text_max_bytes: 163840,
+  screenshots: { max: 4, max_bytes: 262144 },
+  game_max_files: 993,
+  game_max_bytes: 50331648,
+  game_path_max_bytes: 1000,
+} as const;
 
-mkdirSync(out, { recursive: true });
-cpSync(join(here, 'game'), join(out, 'game'), { recursive: true });
-mkdirSync(join(out, 'screenshots'), { recursive: true });
-if (existsSync(join(here, 'screenshots'))) cpSync(join(here, 'screenshots'), join(out, 'screenshots'), { recursive: true });
+// This file lives at the repository root, so its own directory is the anchor
+// every relative path below is resolved against — never the caller's cwd.
+const repoRoot = fileURLToPath(new URL('.', import.meta.url));
 
-// The scorer's own caps (reference/gate.json): only text_max_bytes shapes the bytes; the others refuse an entry the
-// scorer would refuse (more than 4 screenshots or one over 256 KiB; more than 993 files in game/ or 48 MiB of game
-// files, in all, or a path under game/ over 1000 bytes: game/ counts beside /output's own 1000-entry cap, its
-// screenshots/ and dossier.json).
-writeFileSync(
-  join(out, 'dossier.json'),
-  buildDossier(out, {
-    text_max_bytes: 163840,
-    screenshots: { max: 4, max_bytes: 262144 },
-    game_max_files: 993,
-    game_max_bytes: 50331648,
-    game_path_max_bytes: 1000,
-  }),
-);
+function resolveOutputDir(argv: string[]): string {
+  const flagAt = argv.indexOf('--out');
+  if (flagAt !== -1) {
+    const value = argv[flagAt + 1];
+    if (value === undefined || value.startsWith('--')) {
+      throw new Error('--out needs a directory path after it');
+    }
+    return value;
+  }
+  return process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
+}
+
+function stageGame(outDir: string): void {
+  const gameSource = join(repoRoot, 'game');
+  if (!existsSync(join(gameSource, 'index.html'))) {
+    throw new Error('game/index.html is missing — there is no game to hand in');
+  }
+  cpSync(gameSource, join(outDir, 'game'), { recursive: true });
+}
+
+function stageScreenshots(outDir: string): void {
+  // The output always gets a screenshots/ folder; the copies land only when
+  // this checkout actually carries screenshots to hand over.
+  const target = join(outDir, 'screenshots');
+  mkdirSync(target, { recursive: true });
+  const source = join(repoRoot, 'screenshots');
+  if (existsSync(source)) {
+    cpSync(source, target, { recursive: true });
+  }
+}
+
+function writeDossier(outDir: string): void {
+  // Built after staging on purpose: the dossier describes the output tree as
+  // handed in, so it must be generated from the copies, not the sources.
+  const dossier = buildDossier(outDir, SCORER_CAPS);
+  writeFileSync(join(outDir, 'dossier.json'), dossier);
+}
+
+function main(): void {
+  const outDir = resolveOutputDir(process.argv.slice(2));
+  mkdirSync(outDir, { recursive: true });
+  stageGame(outDir);
+  stageScreenshots(outDir);
+  writeDossier(outDir);
+  console.log(`Lantern Row staged in ${outDir} (game/, screenshots/, dossier.json)`);
+}
+
+main();
